@@ -5,6 +5,9 @@ from pytorch_example.task import Net, get_weights, load_data, set_weights, test,
 
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context, ParametersRecord, RecordSet, array_from_numpy
+import subprocess
+import sys
+import os
 
 
 # Define Flower Client and client_fn
@@ -39,17 +42,57 @@ class FlowerClient(NumPyClient):
         # Apply weights from global models (the whole model is replaced)
         set_weights(self.net, parameters)
 
+        # TODO: I'm guessing parameters need to be written to a file.
+
         # Override weights in classification layer with those this client
         # had at the end of the last fit() round it participated in
         self._load_layer_weights_from_state()
 
-        train_loss = train(
-            self.net,
-            self.trainloader,
-            self.local_epochs,
-            lr=float(config["lr"]),
-            device=self.device,
+        # train_loss = train(
+        #     self.net,
+        #     self.trainloader,
+        #     self.local_epochs,
+        #     lr=float(config["lr"]),
+        #     device=self.device,
+        # )
+        # Launch AWS Batch Job
+
+        cmd = f"nextflow run Eye2Gene/Classification -r main -c aws_params.config -profile eye2gene_site2"
+
+        """
+        This nextflow script will run the following under the hood:
+
+        python3 bin/train.py inceptionv3
+
+        # this would be the weights from the global model
+        --initial_weights /path/to/initial_weights.pth
+
+        # this would be the weights from the last time this client trained
+        --initial_classifier /path/to/initial_classifier.pth
+
+        # this would be the output weights from the training
+        --output_weights /path/to/output_weights.pth
+
+        --epochs 1
+        --train-dir train.csv
+        --val-dir test.csv
+        --cfg configs/36class.json configs/augmentations_baf.json configs/hparam_set_6b.json
+        --gpu 0
+        """
+
+        process = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
         )
+
+        return_code = process.poll()
+
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, cmd)
+
         # Save classification head to context's state to use in a future fit() call
         self._save_layer_weights_to_state()
 
@@ -57,7 +100,7 @@ class FlowerClient(NumPyClient):
         return (
             get_weights(self.net),
             len(self.trainloader.dataset),
-            {"train_loss": train_loss},
+            {"train_loss": "train_loss"},
         )
 
     def _save_layer_weights_to_state(self):
