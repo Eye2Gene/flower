@@ -9,6 +9,11 @@ from flwr.common import Context, ParametersRecord, RecordSet, array_from_numpy
 import subprocess
 import pickle
 
+import os
+import json
+from pathlib import Path
+import logging
+
 # Define Flower Client and client_fn
 class FlowerClient(NumPyClient):
     """A simple client that showcases how to use the state.
@@ -24,6 +29,8 @@ class FlowerClient(NumPyClient):
         self.batch_size = batch_size
         self.local_epochs = local_epochs
         self.local_layer_name = "classification-head"
+        self.work_dir = Path("work_dir")
+        self.work_dir.mkdir(exist_ok=True)
 
     def fit(self, parameters, config):
         """Train model locally.
@@ -32,73 +39,88 @@ class FlowerClient(NumPyClient):
         (i.e. the classification head). The classifier is saved at the end of the
         training and used the next time this client participates.
         """
+        try:
+            # Save necessary files for Nextflow
+            param_path = self._save_parameters(parameters)
 
-        # Instantiate model
-        model = load_model(float(config["lr"]))
+            # Initialize model to save classification weights
+            initial_model = load_model(float(config.get("lr", 0.001)))
+            initial_model.set_weights(parameters)
+            self._load_layer_weights_from_state(initial_model)
+            weights_path = self._save_classification_weights(initial_model)
 
-        # Apply weights from global models (the whole model is replaced)
-        model.set_weights(parameters)
+            # set nextflow profile
+            nextflow_profile = 'eye2gene_site2'
 
-        # Override weights in classification layer with those this client
-        # had at the end of the last fit() round it participated in
-        self._load_layer_weights_from_state(model)
+            # Run Nextflow pipeline
+            output_dir = self.work_dir / "output"
+            output_dir.mkdir(exist_ok=True)
 
-        model.fit(
-            self.x_train,
-            self.y_train,
-            epochs=self.local_epochs,
-            batch_size=self.batch_size,
-            verbose=0,
-        )
-        # Save classification head to context's state to use in a future fit() call
-        self._save_layer_weights_to_state(model)
+            cmd = [
+                "nextflow", "run", "Eye2Gene/Classification",
+                "-r", "main",
+                "-c", "aws_params.config",
+                "-profile", str(nextflow_profile),
+                "--start_parameters", str(param_path),
+                "--last_classification_layer_weights", str(weights_path),
+                "--output_dir", str(output_dir),
+                "--epochs", str(self.local_epochs),
+                "--batch_size", str(self.batch_size),
+                "--learning_rate", str(config.get("lr", 0.001))
+            ]
+
+            logger.info(f"Running Nextflow command: {' '.join(cmd)}")
+
+            process = subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            if process.returncode != 0:
+                logger.error(f"Nextflow pipeline failed:\n{process.stderr}")
+                raise subprocess.CalledProcessError(process.returncode, cmd)
+
+            # Load trained model
+            trained_model = self._load_trained_model(output_dir)
+
+            # Save classification head to state
+            self._save_layer_weights_to_state(trained_model)
+
+            return (
+                trained_model.get_weights(),
+                len(self.x_train),
+                {}  # You might want to return metrics from the Nextflow training
+            )
+
+        except Exception as e:
+            logger.error(f"Error during training: {str(e)}")
+            raise
 
 
-        # LAUNCH AWS BATCH JOB
-
-        # TODO step1: write parameters to a pickle file 
-        # https://docs.python.org/3/library/pickle.html
-
-        with open('parameters.pkl', 'wb') as f:
+    def _save_parameters(self, parameters):
+        """Save model parameters for Nextflow pipeline."""
+        param_path = self.work_dir / "parameters.pkl"
+        with open(param_path, "wb") as f:
             pickle.dump(parameters, f)
+        return param_path
 
-        # write the classification layer weights to a pickle file
-        with open('classification_layer_weights.pkl', 'wb') as f:
-            pickle.dump(model.get_weights(), f)
+    def _save_classification_weights(self, model):
+        """Save classification layer weights for Nextflow pipeline."""
+        weights_path = self.work_dir / "classification_layer_weights.pkl"
+        with open(weights_path, "wb") as f:
+            pickle.dump(model.get_layer("dense").get_weights(), f)
+        return weights_path
 
-        cmd = f"nextflow run Eye2Gene/Classification -r main -c aws_params.config -profile eye2gene_site2"
+    def _load_trained_model(self, output_dir):
+        """Load model trained by Nextflow pipeline."""
+        model_path = Path(output_dir) / "saved_model"
+        if not model_path.exists():
+            raise FileNotFoundError(f"Trained model not found at {model_path}")
+        return keras.models.load_model(str(model_path))
 
-        """
-        This nextflow script will run the following under the hood:
-
-        python3 bin/train.py inceptionv3
-
-            --start_parameters /path/to/parameters.pkl
-            --last_classification_layer_weights /path/to/classification_layer_weights.pkl
-            --output_dir /path/to/SAVED_MODEL_FROM_NEXTFLOW_OUTPUT
-
-
-            --epochs 1 --train-dir train.csv --val-dir test.csv --gpu 0
-            --cfg configs/36class.json configs/augmentations_baf.json configs/hparam_set_6b.json
-        """
-
-        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True)
-        return_code = process.poll()
-        if return_code != 0:
-            raise subprocess.CalledProcessError(return_code, cmd)
-
-        # Save classification head to context's state to use in a future fit() call
-        model = 'TODO_LOAD_MODEL_FROM_NEXTFLOW_OUTPUT'
-
-        self._save_layer_weights_to_state(model)
-
-        # Return locally-trained model and metrics
-        return (
-            model.get_weights(),
-            len(self.x_train),
-            {},
-        )
 
     def _save_layer_weights_to_state(self, model):
         """Save last layer weights to state."""
