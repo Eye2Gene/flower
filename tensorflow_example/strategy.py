@@ -1,17 +1,16 @@
-"""pytorch-example: A Flower / PyTorch app."""
+"""tensorflow-example: A Flower / Tensorflow app."""
 
 import json
 from logging import INFO
 
-import torch
 import wandb
-from pytorch_example.task import Net, create_run_dir, set_weights
+from tensorflow_example.task import create_run_dir, load_model
 
 from flwr.common import logger, parameters_to_ndarrays
 from flwr.common.typing import UserConfig
 from flwr.server.strategy import FedAvg
 
-PROJECT_NAME = "FLOWER-advanced-pytorch"
+PROJECT_NAME = "FLOWER-advanced-tensorflow"
 
 
 class CustomFedAvg(FedAvg):
@@ -70,11 +69,14 @@ class CustomFedAvg(FedAvg):
             # model and save the state dict.
             # Converts flwr.common.Parameters to ndarrays
             ndarrays = parameters_to_ndarrays(parameters)
-            model = Net()
-            set_weights(model, ndarrays)
+            model = load_model()
+            model.set_weights(ndarrays)
             # Save the PyTorch model
-            file_name = f"model_state_acc_{accuracy}_round_{round}.pth"
-            torch.save(model.state_dict(), self.save_path / file_name)
+            file_name = (
+                self.save_path
+                / f"model_state_acc_{accuracy:.3f}_round_{round}.weights.h5"
+            )
+            model.save_weights(file_name)
 
     def store_results_and_log(self, server_round: int, tag: str, results_dict):
         """A helper method that stores results and logs them to W&B if enabled."""

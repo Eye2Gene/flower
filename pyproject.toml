@@ -3,18 +3,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pytorch-example"
+name = "tensorflow_fexample"
 version = "1.0.0"
-description = "Federated Learning with PyTorch and Flower (Advanced Example)"
+description = "Federated Learning with Tensorflow/Keras and Flower (Advanced Example)"
 license = "Apache-2.0"
 dependencies = [
-    "flwr[simulation]>=1.13.0",
+    "flwr[simulation]>=1.13.1",
     "flwr-datasets[vision]>=0.3.0",
-    "torch==2.2.1",
-    "torchvision==0.17.1",
+    "tensorflow-cpu>=2.9.1, != 2.11.1 ; platform_machine == \"x86_64\"",
+    "tensorflow-macos>=2.9.1, != 2.11.1 ; sys_platform == \"darwin\" and platform_machine == \"arm64\"",
     "wandb==0.17.8",
 ]
-
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 
@@ -22,15 +21,15 @@ packages = ["."]
 publisher = "flwrlabs"
 
 [tool.flwr.app.components]
-serverapp = "pytorch_example.server_app:app"
-clientapp = "pytorch_example.client_app:app"
+serverapp = "tensorflow_example.server_app:app"
+clientapp = "tensorflow_example.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 10
+num-server-rounds = 5
+local-epochs = 1
+batch-size = 32
 fraction-fit = 0.25
 fraction-evaluate = 0.5
-local-epochs = 1
-server-device = "cpu"
 use-wandb = true
 
 [tool.flwr.federations]
@@ -40,6 +39,7 @@ default = "local-sim"
 options.num-supernodes = 50
 options.backend.client-resources.num-cpus = 2 # each ClientApp assumes to use 2CPUs
 options.backend.client-resources.num-gpus = 0.0 # ratio of VRAM a ClientApp has access to
+
 [tool.flwr.federations.local-sim-gpu]
 options.num-supernodes = 50
 options.backend.client-resources.num-cpus = 2
